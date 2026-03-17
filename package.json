@@ -12,11 +12,14 @@
   "type": "commonjs",
   "dependencies": {
     "@google/genai": "^1.43.0",
+    "@sentry/node": "^10.43.0",
+    "@supabase/supabase-js": "^2.99.2",
     "cors": "^2.8.6",
     "dotenv": "^17.3.1",
     "express": "^5.2.1",
     "genai": "^0.0.18",
-    "openai": "^6.25.0"
+    "openai": "^6.25.0",
+    "zod": "^4.3.6"
   },
   "devDependencies": {
     "@types/cors": "^2.8.19",
