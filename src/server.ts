@@ -23,7 +23,7 @@ app.use(
   }),
 )
 app.options('{*splat}', cors())
-app.use(express.json())
+app.use(express.json({ limit: '10mb' }))
 
 // Routes
 app.use('/api/analyses', analysesRouter)

@@ -4,6 +4,12 @@ import { supabase } from '../lib/supabase'
 import { AnalysisResultSchema, AnalyzeRequestSchema } from '../lib/schemas'
 import { AuthRequest, requireAuth } from '../middleware/auth'
 import { treeifyError } from 'zod'
+import multer from 'multer'
+
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 10 * 1024 * 1024 },
+})
 
 const router = Router()
 
@@ -34,28 +40,6 @@ const jsonSchema = {
     'environmental_triggers',
     'when_to_worry',
   ],
-}
-
-const breedScanResponseSchema = {
-  type: Type.OBJECT,
-  properties: {
-    found: { type: Type.BOOLEAN },
-    message: { type: Type.STRING },
-    breed: { type: Type.STRING },
-    confidence: { type: Type.NUMBER },
-    origin: { type: Type.STRING },
-    temperament: {
-      type: Type.ARRAY,
-      items: { type: Type.STRING },
-    },
-    size: { type: Type.STRING },
-    lifespan: { type: Type.STRING },
-    fun_fact: { type: Type.STRING },
-    energy: { type: Type.NUMBER },
-    friendliness: { type: Type.NUMBER },
-    trainability: { type: Type.NUMBER },
-  },
-  required: ['found'],
 }
 
 // POST (/api/analyses)
@@ -196,73 +180,80 @@ router.post('/guest', async (req: Request, res: Response) => {
 
 // POST (/api/analyses/breed-scan)
 // Description: Analyze a dog breed based on an image using AI
-router.post('/breed-scan', async (req: Request, res: Response) => {
-  const { imageBase64 } = req.body
+router.post(
+  '/breed-scan',
+  upload.single('image'),
+  async (req: Request, res: Response) => {
+    let mimeType: string
+    let cleanBase64: string
 
-  if (!imageBase64) {
-    return res.status(400).json({ error: 'Missing image data' })
-  }
-
-  const mimeTypeMatch = imageBase64.match(/^data:(image\/\w+);base64,/)
-  const mimeType = mimeTypeMatch ? mimeTypeMatch[1] : 'image/jpeg'
-  const cleanBase64 = imageBase64.replace(/^data:image\/\w+;base64,/, '')
-
-  try {
-    const result = await gemini.models.generateContent({
-      model: 'gemini-2.5-flash',
-      // config: {
-      //   responseMimeType: 'application/json',
-      //   responseJsonSchema: breedScanResponseSchema,
-      // },
-      contents: {
-        parts: [
-          {
-            inlineData: {
-              mimeType,
-              data: cleanBase64,
-            },
-          },
-          {
-            text: `You are an expert dog breed identifier. Analyse this image carefully.
-
-If there is a dog in the image, respond ONLY with a JSON object (no markdown, no explanation) like this:
-{
-  "found": true,
-  "breed": "Golden Retriever",
-  "confidence": 92,
-  "origin": "Scotland, UK",
-  "temperament": ["Kind", "Intelligent", "Reliable"],
-  "size": "Large",
-  "lifespan": "10-12 years",
-  "fun_fact": "Golden Retrievers love water and are excellent swimmers!",
-  "energy": 85,
-  "friendliness": 98,
-  "trainability": 90
-}
-
-If no dog is found, respond ONLY with:
-{ "found": false, "message": "No dog found! Please show the dog to the camera! 🐾" }
-
-Be precise with breeds. Mixed breeds are okay to identify too.`,
-          },
-        ],
-      },
-    })
-
-    const rawText = result.candidates?.[0]?.content?.parts?.[0]?.text
-
-    if (!rawText) {
-      return res.status(502).json({ error: 'No response from AI model' })
+    if (req.file) {
+      // Received as multipart/form-data file upload
+      mimeType = req.file.mimetype || 'image/jpeg'
+      cleanBase64 = req.file.buffer.toString('base64')
+    } else if (req.body?.imageBase64) {
+      // Received as JSON base64 string (legacy support)
+      const { imageBase64 } = req.body
+      const mimeTypeMatch = imageBase64.match(/^data:(image\/\w+);base64,/)
+      mimeType = mimeTypeMatch ? mimeTypeMatch[1] : 'image/jpeg'
+      cleanBase64 = imageBase64.replace(/^data:image\/\w+;base64,/, '')
+    } else {
+      return res.status(400).json({ error: 'Missing image data' })
     }
-    const clean = rawText
-      .replace(/```json/g, '')
-      .replace(/```/g, '')
-      .trim()
-    res.json({ result: JSON.parse(clean) })
-  } catch (error) {
-    console.error('Error during breed scan:', error)
-    return res.status(500).json({ error: 'Failed to analyze breed' })
-  }
-})
+
+    try {
+      const result = await gemini.models.generateContent({
+        model: 'gemini-2.5-flash',
+        contents: {
+          parts: [
+            {
+              inlineData: {
+                mimeType,
+                data: cleanBase64,
+              },
+            },
+            {
+              text: `You are an expert dog breed identifier. Analyse this image carefully.
+
+                  If there is a dog in the image, respond ONLY with a JSON object (no markdown, no explanation) like this. If you are unsure between a few breeds, choose the most likely one and give a confidence percentage:
+                  {
+                    "found": true,
+                    "breed": "Golden Retriever",
+                    "confidence": 92,
+                    "origin": "Scotland, UK",
+                    "temperament": ["Kind", "Intelligent", "Reliable"],
+                    "size": "Large",
+                    "lifespan": "10-12 years",
+                    "fun_fact": "Golden Retrievers love water and are excellent swimmers!",
+                    "energy": 85,
+                    "friendliness": 98,
+                    "trainability": 90
+                  }
+
+                  If no dog is found, respond ONLY with:
+                  { "found": false, "message": "No dog found! Please show the dog to the camera! 🐾" }
+
+                  Be precise with breeds. Mixed breeds are okay to identify too.`,
+            },
+          ],
+        },
+      })
+
+      const rawText = result.candidates?.[0]?.content?.parts?.[0]?.text
+
+      if (!rawText) {
+        return res.status(502).json({ error: 'No response from AI model' })
+      }
+      const clean = rawText
+        .replace(/```json/g, '')
+        .replace(/```/g, '')
+        .trim()
+      res.json({ result: JSON.parse(clean) })
+    } catch (error) {
+      console.error('Error during breed scan:', error)
+      return res.status(500).json({ error: 'Failed to analyze breed' })
+    }
+  },
+)
 
 export default router
